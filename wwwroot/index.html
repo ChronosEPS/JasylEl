@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Жасыл Ел Казахстан</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <section id="authScreen" class="auth-screen">
+    <div class="auth-shell">
+      <div class="brand-panel">
+        <div class="brand-mark">ЖЕ</div>
+        <h1>Жасыл Ел Казахстан</h1>
+        <p>Стратегия озеленения: развивайте регион, сажайте деревья, проходите викторины и решайте экологические проблемы.</p>
+        <div class="brand-stats">
+          <span>3000x3000 карта</span>
+          <span>50 уровней</span>
+          <span>JWT + EF Core</span>
+        </div>
+      </div>
+
+      <div class="auth-card">
+        <div class="tabs">
+          <button id="loginTab" class="tab active">Вход</button>
+          <button id="registerTab" class="tab">Регистрация</button>
+        </div>
+
+        <form id="loginForm" class="form active">
+          <label>Логин или email<input id="loginName" autocomplete="username" required></label>
+          <label>Пароль<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+          <button class="primary" type="submit">Войти</button>
+        </form>
+
+        <form id="registerForm" class="form">
+          <label>Логин<input id="registerName" minlength="3" maxlength="50" autocomplete="username" required></label>
+          <label>Email<input id="registerEmail" type="email" autocomplete="email" required></label>
+          <label>Пароль<input id="registerPassword" type="password" minlength="6" autocomplete="new-password" required></label>
+          <div>
+            <div class="field-title">Регион</div>
+            <div id="regionGrid" class="region-grid"></div>
+          </div>
+          <button class="primary" type="submit">Создать профиль</button>
+        </form>
+
+        <div id="authMessage" class="message"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="gameScreen" class="game-screen hidden">
+    <header class="topbar">
+      <button id="profileButton" class="profile-button">
+        <span id="levelBadge">1</span>
+        <strong id="playerName">Игрок</strong>
+        <small id="playerRegion">Регион</small>
+      </button>
+      <div class="resources">
+        <span title="Монеты">₸ <b id="coins">0</b></span>
+        <span title="Вода">💧 <b id="water">0</b></span>
+        <span title="Энергия">⚡ <b id="energy">0</b></span>
+        <span title="Экология">🍃 <b id="eco">0</b></span>
+        <span title="Репутация">★ <b id="rep">0</b></span>
+      </div>
+      <div class="top-actions">
+        <button id="quizButton">Викторина</button>
+        <button id="eventButton">Событие</button>
+        <button id="leaderboardButton">Рейтинг</button>
+        <button id="logoutButton">Выход</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="tool-row">
+        <button id="moveTool" class="tool active">Двигать</button>
+        <button id="treeTool" class="tool">Деревья</button>
+        <button id="buildTool" class="tool">Постройки</button>
+      </div>
+      <div id="palette" class="palette"></div>
+      <div class="hint" id="toolHint">Перетаскивайте карту мышью, масштабируйте колесом.</div>
+    </aside>
+
+    <main id="phaserContainer" class="map"></main>
+  </section>
+
+  <dialog id="modal">
+    <div class="modal-head">
+      <h2 id="modalTitle"></h2>
+      <button id="modalClose" aria-label="Закрыть">×</button>
+    </div>
+    <div id="modalBody"></div>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.87.0/dist/phaser.min.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
