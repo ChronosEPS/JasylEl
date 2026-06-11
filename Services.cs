@@ -141,6 +141,7 @@ namespace JasylEl.Services
     public interface IGameService
     {
         Task<MapDataDto> GetMapAsync(int userId);
+        Task<CanPlantResultDto> CanPlantAtAsync(int userId, float x, float y, int treeTypeId);
         Task<MapObjectDto> PlantTreeAsync(int userId, PlantTreeDto dto);
         Task<MapObjectDto> PlaceBuildingAsync(int userId, PlaceBuildingDto dto);
         Task<MapObjectDto> UpgradeBuildingAsync(int userId, UpgradeBuildingDto dto);
@@ -155,6 +156,7 @@ namespace JasylEl.Services
 
     public class GameService : IGameService
     {
+        private const float MapSize = 3000f;
         private readonly IUserRepository _userRepo;
         private readonly IMapRepository _mapRepo;
         private readonly ITreeRepository _treeRepo;
@@ -179,12 +181,29 @@ namespace JasylEl.Services
             _npcRepo = npcRepo;
         }
 
+        private sealed record ZoneDefinition(
+            int Id,
+            string ZoneType,
+            string Name,
+            float X,
+            float Y,
+            float Width,
+            float Height,
+            bool CanPlant,
+            float GrowthMultiplier,
+            float WaterCostMultiplier,
+            float DroughtRiskModifier,
+            string Visual);
+
         /// <summary>Получить все объекты карты пользователя</summary>
         public async Task<MapDataDto> GetMapAsync(int userId)
         {
+            var user = await _userRepo.GetByIdAsync(userId)
+                ?? throw new InvalidOperationException("Пользователь не найден");
             var objects = await _mapRepo.GetUserMapObjectsAsync(userId);
             var events = await _eventRepo.GetActiveUserEventsAsync(userId);
             var npcs = await _npcRepo.GetUserNPCsAsync(userId);
+            var zones = BuildZonesForRegion(user.RegionId);
 
             // Обновляем стадии роста деревьев
             bool changed = false;
@@ -192,7 +211,7 @@ namespace JasylEl.Services
             {
                 if (obj.NextGrowthAt <= DateTime.UtcNow && obj.GrowthStage != "Adult")
                 {
-                    AdvanceGrowthStage(obj);
+                    AdvanceGrowthStage(obj, user, zones);
                     changed = true;
                 }
             }
@@ -210,6 +229,7 @@ namespace JasylEl.Services
                     IsResolved = e.IsResolved, CreatedAt = e.CreatedAt,
                     MapObjectId = e.MapObjectId
                 }).ToList(),
+                Zones = zones.Select(ToZoneDto).ToList(),
                 NPCs = npcs.Select(n => new NPCDto
                 {
                     Id = n.Id, Name = n.NPCType?.Name ?? "",
@@ -217,6 +237,57 @@ namespace JasylEl.Services
                     PositionX = n.PositionX, PositionY = n.PositionY,
                     TargetX = n.TargetX, TargetY = n.TargetY
                 }).ToList()
+            };
+        }
+
+        public async Task<CanPlantResultDto> CanPlantAtAsync(int userId, float x, float y, int treeTypeId)
+        {
+            var user = await _userRepo.GetByIdAsync(userId)
+                ?? throw new InvalidOperationException("Пользователь не найден");
+            var treeType = await _treeRepo.GetByIdAsync(treeTypeId)
+                ?? throw new InvalidOperationException("Тип дерева не найден");
+
+            var zones = BuildZonesForRegion(user.RegionId);
+            var zone = ResolveZone(x, y, zones);
+            var waterMultiplier = GetWaterCostMultiplier(zone, x, y, zones);
+            var growthMultiplier = GetGrowthMultiplier(user.Region, treeType, zone, x, y, zones);
+
+            if (x < 0 || y < 0 || x > MapSize || y > MapSize)
+            {
+                return new CanPlantResultDto
+                {
+                    CanPlant = false,
+                    Reason = "Точка вне границ карты.",
+                    ZoneType = "OutOfBounds",
+                    GrowthMultiplier = growthMultiplier,
+                    WaterCostMultiplier = waterMultiplier
+                };
+            }
+
+            if (!zone.CanPlant)
+            {
+                return new CanPlantResultDto
+                {
+                    CanPlant = false,
+                    Reason = zone.ZoneType switch
+                    {
+                        "City" => "В городах сажать нельзя. Выберите участок за пределами города.",
+                        "Water" => "На водных объектах посадка невозможна.",
+                        _ => "В этой зоне посадка запрещена."
+                    },
+                    ZoneType = zone.ZoneType,
+                    GrowthMultiplier = growthMultiplier,
+                    WaterCostMultiplier = waterMultiplier
+                };
+            }
+
+            return new CanPlantResultDto
+            {
+                CanPlant = true,
+                Reason = $"Посадка разрешена: {zone.Name}.",
+                ZoneType = zone.ZoneType,
+                GrowthMultiplier = growthMultiplier,
+                WaterCostMultiplier = waterMultiplier
             };
         }
 
@@ -239,13 +310,20 @@ namespace JasylEl.Services
             if (user.Level < treeType.UnlockLevel)
                 throw new InvalidOperationException($"Недостаточный уровень. Нужен уровень {treeType.UnlockLevel}");
 
+            var zones = BuildZonesForRegion(user.RegionId);
+            var canPlant = await CanPlantAtAsync(userId, dto.PositionX, dto.PositionY, dto.TreeTypeId);
+            if (!canPlant.CanPlant)
+                throw new InvalidOperationException(canPlant.Reason);
+
+            int waterCost = (int)Math.Ceiling(treeType.CostWater * canPlant.WaterCostMultiplier);
+
             // Проверяем ресурсы
-            if (user.Coins < treeType.CostCoins || user.Water < treeType.CostWater || user.Energy < treeType.CostEnergy)
+            if (user.Coins < treeType.CostCoins || user.Water < waterCost || user.Energy < treeType.CostEnergy)
                 throw new InvalidOperationException("Недостаточно ресурсов");
 
             // Списываем ресурсы
             user.Coins -= treeType.CostCoins;
-            user.Water -= treeType.CostWater;
+            user.Water -= waterCost;
             user.Energy -= treeType.CostEnergy;
 
             // Начисляем опыт и экологические очки
@@ -256,9 +334,7 @@ namespace JasylEl.Services
             await _userRepo.UpdateAsync(user);
 
             // Создаём объект на карте
-            var region = user.Region;
-            float growthSpeedMultiplier = region != null ? 1f + region.GrowthSpeedBonus : 1f;
-            int timeToSapling = (int)(treeType.TimeToSapling / growthSpeedMultiplier);
+            int timeToSapling = CalculateStageMinutes(treeType, "Seed", user, ResolveZone(dto.PositionX, dto.PositionY, zones), dto.PositionX, dto.PositionY, zones);
 
             var mapObj = new MapObject
             {
@@ -398,14 +474,22 @@ namespace JasylEl.Services
 
             var eventTypes = new[] { "Fire", "Drought", "Trash", "Disease" };
             var eventType = eventTypes[_random.Next(eventTypes.Length)];
+            var zones = BuildZonesForRegion(user.RegionId);
 
             // Случайная позиция на карте 3000x3000
             float x = (float)(_random.NextDouble() * 2800 + 100);
             float y = (float)(_random.NextDouble() * 2800 + 100);
+            var zone = ResolveZone(x, y, zones);
 
             // Засуха чаще в засушливых регионах
-            if (user.Region?.DroughtRisk > 0.2f && _random.NextDouble() < user.Region.DroughtRisk)
+            float droughtRisk = (user.Region?.DroughtRisk ?? 0.1f) + zone.DroughtRiskModifier;
+            if (IsNearWater(x, y, zones))
+                droughtRisk -= 0.08f;
+            droughtRisk = Math.Clamp(droughtRisk, 0.03f, 0.85f);
+            if (_random.NextDouble() < droughtRisk)
                 eventType = "Drought";
+            else if (zone.ZoneType == "Water" && _random.NextDouble() < 0.5f)
+                eventType = "Trash";
 
             var evt = new EcoEvent
             {
@@ -498,7 +582,7 @@ namespace JasylEl.Services
 
         // ===================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====================
 
-        private static void AdvanceGrowthStage(MapObject obj)
+        private static void AdvanceGrowthStage(MapObject obj, User user, List<ZoneDefinition> zones)
         {
             obj.GrowthStage = obj.GrowthStage switch
             {
@@ -507,8 +591,15 @@ namespace JasylEl.Services
                 "Sprout" => "Adult",
                 _ => "Adult"
             };
-            // Следующий рост через удвоенное время
-            obj.NextGrowthAt = DateTime.UtcNow.AddMinutes(30);
+            if (obj.GrowthStage == "Adult")
+            {
+                obj.NextGrowthAt = DateTime.UtcNow.AddYears(10);
+                return;
+            }
+
+            var zone = ResolveZone(obj.PositionX, obj.PositionY, zones);
+            int minutes = CalculateStageMinutes(obj.TreeType, obj.GrowthStage, user, zone, obj.PositionX, obj.PositionY, zones);
+            obj.NextGrowthAt = DateTime.UtcNow.AddMinutes(minutes);
         }
 
         private async Task AddExperienceAsync(User user, int amount)
@@ -537,6 +628,141 @@ namespace JasylEl.Services
 
             foreach (var achievement in relevant)
                 await _achievementRepo.CreateOrUpdateUserAchievementAsync(userId, achievement.Id, value);
+        }
+
+        private static List<ZoneDefinition> BuildZonesForRegion(int regionId)
+        {
+            var zones = new List<ZoneDefinition>
+            {
+                new(1, "Steppe", "Центральная степь", 0, 0, 3000, 3000, true, 1f, 1f, 0.02f, "steppe")
+            };
+
+            zones.Add(regionId switch
+            {
+                1 => new ZoneDefinition(2, "City", "Астана", 1320, 1230, 380, 360, false, 0.8f, 1.2f, 0.01f, "city"),
+                2 => new ZoneDefinition(2, "City", "Алматы", 1950, 2140, 360, 340, false, 0.9f, 1.15f, 0.03f, "city"),
+                3 => new ZoneDefinition(2, "City", "Шымкент", 1530, 2300, 340, 320, false, 0.9f, 1.15f, 0.03f, "city"),
+                4 => new ZoneDefinition(2, "City", "Караганда", 1280, 1520, 320, 300, false, 0.85f, 1.2f, 0.04f, "city"),
+                5 => new ZoneDefinition(2, "City", "Костанай", 900, 1050, 320, 300, false, 0.88f, 1.15f, 0.02f, "city"),
+                6 => new ZoneDefinition(2, "City", "Павлодар", 1780, 1120, 330, 310, false, 0.88f, 1.1f, 0.01f, "city"),
+                7 => new ZoneDefinition(2, "City", "Өскемен", 2380, 1090, 320, 300, false, 0.88f, 1.1f, 0.01f, "city"),
+                8 => new ZoneDefinition(2, "City", "Актау", 380, 1770, 320, 300, false, 0.86f, 1.25f, 0.08f, "city"),
+                _ => new ZoneDefinition(2, "City", "Город", 1400, 1300, 320, 300, false, 0.88f, 1.15f, 0.03f, "city")
+            });
+
+            zones.Add(regionId switch
+            {
+                8 => new ZoneDefinition(3, "Desert", "Сухие песчаные участки", 120, 1320, 980, 1260, true, 0.7f, 1.45f, 0.22f, "sand"),
+                3 => new ZoneDefinition(3, "Desert", "Южная засушливая зона", 1200, 2250, 950, 620, true, 0.8f, 1.3f, 0.16f, "sand"),
+                _ => new ZoneDefinition(3, "Dry", "Сухая зона", 260, 1860, 760, 680, true, 0.9f, 1.2f, 0.1f, "dry")
+            });
+
+            zones.Add(regionId switch
+            {
+                6 => new ZoneDefinition(4, "Water", "Озеро и пойма Иртыша", 1680, 830, 620, 620, false, 0.95f, 0.75f, -0.06f, "water"),
+                2 => new ZoneDefinition(4, "Water", "Капчагайские водные зоны", 2060, 1960, 520, 440, false, 0.95f, 0.8f, -0.05f, "water"),
+                8 => new ZoneDefinition(4, "Water", "Побережье Каспия", 0, 1620, 600, 760, false, 0.9f, 0.82f, -0.04f, "water"),
+                _ => new ZoneDefinition(4, "Water", "Озёрная зона", 2250, 510, 470, 420, false, 0.95f, 0.8f, -0.05f, "water")
+            });
+
+            zones.Add(regionId switch
+            {
+                7 => new ZoneDefinition(5, "Forest", "Горный лесной пояс", 2150, 740, 780, 740, true, 1.22f, 0.9f, -0.04f, "forest"),
+                2 => new ZoneDefinition(5, "Forest", "Предгорный зелёный пояс", 1700, 1830, 820, 740, true, 1.16f, 0.95f, -0.03f, "forest"),
+                _ => new ZoneDefinition(5, "Fertile", "Плодородная зона", 1120, 700, 780, 650, true, 1.12f, 0.95f, -0.02f, "fertile")
+            });
+
+            return zones;
+        }
+
+        private static ZoneDefinition ResolveZone(float x, float y, List<ZoneDefinition> zones)
+        {
+            for (int i = zones.Count - 1; i >= 0; i--)
+            {
+                var z = zones[i];
+                if (x >= z.X && x <= z.X + z.Width && y >= z.Y && y <= z.Y + z.Height)
+                    return z;
+            }
+            return zones[0];
+        }
+
+        private static MapZoneDto ToZoneDto(ZoneDefinition zone) => new()
+        {
+            Id = zone.Id,
+            ZoneType = zone.ZoneType,
+            Name = zone.Name,
+            X = zone.X,
+            Y = zone.Y,
+            Width = zone.Width,
+            Height = zone.Height,
+            CanPlant = zone.CanPlant,
+            GrowthMultiplier = zone.GrowthMultiplier,
+            WaterCostMultiplier = zone.WaterCostMultiplier,
+            DroughtRiskModifier = zone.DroughtRiskModifier,
+            Visual = zone.Visual
+        };
+
+        private static int CalculateStageMinutes(TreeType? treeType, string currentStage, User user, ZoneDefinition zone, float x, float y, List<ZoneDefinition> zones)
+        {
+            float baseMinutes = treeType?.Rarity switch
+            {
+                "Rare" => 2.6f,
+                "Epic" => 3.3f,
+                "Legendary" => 4.2f,
+                _ => 2f
+            };
+
+            float treeMultiplier = treeType?.GrowthTimeMultiplier ?? 1f;
+            float stageMultiplier = currentStage switch
+            {
+                "Seed" => 1f,
+                "Sapling" => 1.05f,
+                "Sprout" => 1.12f,
+                _ => 1f
+            };
+
+            float regionMultiplier = 1f - (user.Region?.GrowthSpeedBonus ?? 0);
+            if (regionMultiplier < 0.6f) regionMultiplier = 0.6f;
+
+            float zoneMultiplier = 1f / Math.Max(0.35f, zone.GrowthMultiplier);
+            if (IsNearWater(x, y, zones))
+                zoneMultiplier *= 0.9f;
+
+            int minutes = (int)Math.Round(baseMinutes * treeMultiplier * stageMultiplier * regionMultiplier * zoneMultiplier, MidpointRounding.AwayFromZero);
+            return Math.Max(1, minutes);
+        }
+
+        private static float GetGrowthMultiplier(Region? region, TreeType treeType, ZoneDefinition zone, float x, float y, List<ZoneDefinition> zones)
+        {
+            float regionFactor = 1f + (region?.GrowthSpeedBonus ?? 0f);
+            float treeFactor = 1f / Math.Max(0.65f, treeType.GrowthTimeMultiplier);
+            float nearWater = IsNearWater(x, y, zones) ? 1.1f : 1f;
+            return regionFactor * zone.GrowthMultiplier * treeFactor * nearWater;
+        }
+
+        private static float GetWaterCostMultiplier(ZoneDefinition zone, float x, float y, List<ZoneDefinition> zones)
+        {
+            float multiplier = zone.WaterCostMultiplier;
+            if (zone.ZoneType == "Desert" || zone.ZoneType == "Dry")
+                multiplier += 0.1f;
+            if (zone.ZoneType != "Water" && IsNearWater(x, y, zones))
+                multiplier -= 0.08f;
+            return Math.Clamp(multiplier, 0.65f, 1.8f);
+        }
+
+        private static bool IsNearWater(float x, float y, List<ZoneDefinition> zones)
+        {
+            var waterZones = zones.Where(z => z.ZoneType == "Water");
+            foreach (var zone in waterZones)
+            {
+                float expandedX = zone.X - 140;
+                float expandedY = zone.Y - 140;
+                float expandedW = zone.Width + 280;
+                float expandedH = zone.Height + 280;
+                if (x >= expandedX && x <= expandedX + expandedW && y >= expandedY && y <= expandedY + expandedH)
+                    return true;
+            }
+            return false;
         }
 
         private static MapObjectDto MapObjectToDto(MapObject obj)

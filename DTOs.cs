@@ -89,6 +89,7 @@ namespace JasylEl.DTOs
         public List<MapObjectDto> Objects { get; set; } = new();
         public List<EcoEventDto> Events { get; set; } = new();
         public List<NPCDto> NPCs { get; set; } = new();
+        public List<MapZoneDto> Zones { get; set; } = new();
     }
 
     public class MapObjectDto
@@ -139,6 +140,15 @@ namespace JasylEl.DTOs
 
         [Required]
         public float PositionY { get; set; }
+    }
+
+    public class CanPlantResultDto
+    {
+        public bool CanPlant { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public string ZoneType { get; set; } = "Neutral";
+        public float GrowthMultiplier { get; set; } = 1f;
+        public float WaterCostMultiplier { get; set; } = 1f;
     }
 
     public class UpgradeBuildingDto
@@ -251,6 +261,22 @@ namespace JasylEl.DTOs
         public bool IsResolved { get; set; }
         public DateTime CreatedAt { get; set; }
         public int? MapObjectId { get; set; }
+    }
+
+    public class MapZoneDto
+    {
+        public int Id { get; set; }
+        public string ZoneType { get; set; } = "Neutral";
+        public string Name { get; set; } = string.Empty;
+        public float X { get; set; }
+        public float Y { get; set; }
+        public float Width { get; set; }
+        public float Height { get; set; }
+        public bool CanPlant { get; set; } = true;
+        public float GrowthMultiplier { get; set; } = 1f;
+        public float WaterCostMultiplier { get; set; } = 1f;
+        public float DroughtRiskModifier { get; set; }
+        public string Visual { get; set; } = "neutral";
     }
 
     // ===================== NPC DTOs =====================
