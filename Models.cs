@@ -123,6 +123,7 @@ namespace JasylEl.Models
         public int TimeToSapling { get; set; } = 5;
         public int TimeToSprout { get; set; } = 15;
         public int TimeToAdult { get; set; } = 30;
+        public float GrowthTimeMultiplier { get; set; } = 1f;
 
         public bool IsUnlockedByDefault { get; set; } = false;
     }

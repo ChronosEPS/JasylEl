@@ -10,6 +10,8 @@ const state = {
   selectedBuilding: null,
   game: null,
   scene: null,
+  zones: [],
+  groundLayer: null,
   objectSprites: new Map(),
   eventSprites: new Map(),
   npcSprites: new Map()
@@ -320,8 +322,10 @@ function update() {
   }
 }
 
-function drawGround(scene) {
+function drawGround(scene, zones = []) {
+  if (state.groundLayer) state.groundLayer.destroy();
   const g = scene.add.graphics();
+  state.groundLayer = g;
   g.fillStyle(0xbfd7bd, 1);
   g.fillRect(0, 0, 3000, 3000);
   for (let x = 0; x <= 3000; x += 120) {
@@ -336,6 +340,22 @@ function drawGround(scene) {
     g.fillStyle([0x9fc592, 0xd1c28b, 0x8fb583][i % 3], .42);
     g.fillCircle(Math.random() * 3000, Math.random() * 3000, 8 + Math.random() * 24);
   }
+  zones.forEach(zone => {
+    const color = ({
+      city: 0x7f8c8d,
+      sand: 0xe4c26e,
+      dry: 0xd9b67a,
+      water: 0x5dade2,
+      forest: 0x4caf50,
+      fertile: 0x7cb342,
+      steppe: 0xa4c48e
+    })[zone.visual || "steppe"] || 0xa4c48e;
+    const alpha = zone.canPlant ? 0.16 : 0.28;
+    g.fillStyle(color, alpha);
+    g.fillRoundedRect(zone.x, zone.y, zone.width, zone.height, 18);
+    g.lineStyle(2, color, 0.55);
+    g.strokeRoundedRect(zone.x, zone.y, zone.width, zone.height, 18);
+  });
 }
 
 async function refreshMap() {
@@ -343,6 +363,8 @@ async function refreshMap() {
   const data = await api("/map");
   const objects = data.objects || data.Objects || [];
   const events = data.events || data.Events || [];
+  state.zones = data.zones || data.Zones || [];
+  drawGround(state.scene, state.zones);
   const npcs = data.npcs || data.npCs || data.NPCs || [];
   state.objectSprites.forEach(sprite => sprite.destroy());
   state.eventSprites.forEach(sprite => sprite.destroy());
@@ -453,8 +475,13 @@ function drawNpc(npc) {
 async function placeAt(x, y) {
   try {
     if (state.tool === "tree" && state.selectedTree) {
+      const check = await api(`/map/can-plant?x=${encodeURIComponent(x)}&y=${encodeURIComponent(y)}&treeTypeId=${state.selectedTree.id}`);
+      if (!check.canPlant) {
+        showToast(check.reason || "В этой зоне сажать нельзя.");
+        return;
+      }
       await api("/map/plant", { method: "POST", body: JSON.stringify({ treeTypeId: state.selectedTree.id, positionX: x, positionY: y }) });
-      showToast(`Посажено: ${state.selectedTree.name}`);
+      showToast(`Посажено: ${state.selectedTree.name} (${check.zoneType})`);
     } else if (state.tool === "build" && state.selectedBuilding) {
       await api("/map/build", { method: "POST", body: JSON.stringify({ buildingTypeId: state.selectedBuilding.id, positionX: x, positionY: y }) });
       showToast(`Построено: ${state.selectedBuilding.name}`);

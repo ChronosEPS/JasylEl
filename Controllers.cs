@@ -115,6 +115,15 @@ namespace JasylEl.Controllers
             return Ok(map);
         }
 
+        /// <summary>Проверить можно ли посадить дерево в точке</summary>
+        [HttpGet("can-plant")]
+        public async Task<IActionResult> CanPlant([FromQuery] float x, [FromQuery] float y, [FromQuery] int treeTypeId)
+        {
+            int userId = GetUserId();
+            var result = await _gameService.CanPlantAtAsync(userId, x, y, treeTypeId);
+            return Ok(result);
+        }
+
         /// <summary>Посадить дерево</summary>
         [HttpPost("plant")]
         public async Task<IActionResult> PlantTree([FromBody] PlantTreeDto dto)
