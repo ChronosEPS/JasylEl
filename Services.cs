@@ -157,6 +157,21 @@ namespace JasylEl.Services
     public class GameService : IGameService
     {
         private const float MapSize = 3000f;
+        private const float WaterProximityGrowthBonus = 1.1f;
+        private const float WaterProximityGrowthTimeFactor = 0.9f;
+        private const float WaterProximityExpansionPixels = 140f;
+        private const float MinDroughtRisk = 0.03f;
+        private const float MaxDroughtRisk = 0.85f;
+        private const float MinWaterCostMultiplier = 0.65f;
+        private const float MaxWaterCostMultiplier = 1.8f;
+        private const float MinRegionGrowthMultiplier = 0.6f;
+        private const float MinZoneGrowthMultiplier = 0.35f;
+        private const float MinTreeGrowthMultiplier = 0.65f;
+        private const float BaseCommonPhaseMinutes = 2f;
+        private const float BaseRarePhaseMinutes = 2.6f;
+        private const float BaseEpicPhaseMinutes = 3.3f;
+        private const float BaseLegendaryPhaseMinutes = 4.2f;
+        private const int AdultTreeYearsUntilNextGrowth = 10;
         private readonly IUserRepository _userRepo;
         private readonly IMapRepository _mapRepo;
         private readonly ITreeRepository _treeRepo;
@@ -252,7 +267,7 @@ namespace JasylEl.Services
             var waterMultiplier = GetWaterCostMultiplier(zone, x, y, zones);
             var growthMultiplier = GetGrowthMultiplier(user.Region, treeType, zone, x, y, zones);
 
-            if (x < 0 || y < 0 || x > MapSize || y > MapSize)
+            if (x < 0 || y < 0 || x >= MapSize || y >= MapSize)
             {
                 return new CanPlantResultDto
                 {
@@ -485,7 +500,7 @@ namespace JasylEl.Services
             float droughtRisk = (user.Region?.DroughtRisk ?? 0.1f) + zone.DroughtRiskModifier;
             if (IsNearWater(x, y, zones))
                 droughtRisk -= 0.08f;
-            droughtRisk = Math.Clamp(droughtRisk, 0.03f, 0.85f);
+            droughtRisk = Math.Clamp(droughtRisk, MinDroughtRisk, MaxDroughtRisk);
             if (_random.NextDouble() < droughtRisk)
                 eventType = "Drought";
             else if (zone.ZoneType == "Water" && _random.NextDouble() < 0.5f)
@@ -593,7 +608,7 @@ namespace JasylEl.Services
             };
             if (obj.GrowthStage == "Adult")
             {
-                obj.NextGrowthAt = DateTime.UtcNow.AddYears(10);
+                obj.NextGrowthAt = DateTime.UtcNow.AddYears(AdultTreeYearsUntilNextGrowth);
                 return;
             }
 
@@ -706,10 +721,10 @@ namespace JasylEl.Services
         {
             float baseMinutes = treeType?.Rarity switch
             {
-                "Rare" => 2.6f,
-                "Epic" => 3.3f,
-                "Legendary" => 4.2f,
-                _ => 2f
+                "Rare" => BaseRarePhaseMinutes,
+                "Epic" => BaseEpicPhaseMinutes,
+                "Legendary" => BaseLegendaryPhaseMinutes,
+                _ => BaseCommonPhaseMinutes
             };
 
             float treeMultiplier = treeType?.GrowthTimeMultiplier ?? 1f;
@@ -721,22 +736,22 @@ namespace JasylEl.Services
                 _ => 1f
             };
 
-            float regionMultiplier = 1f - (user.Region?.GrowthSpeedBonus ?? 0);
-            if (regionMultiplier < 0.6f) regionMultiplier = 0.6f;
+            float regionTimeFactor = 1f - (user.Region?.GrowthSpeedBonus ?? 0);
+            if (regionTimeFactor < MinRegionGrowthMultiplier) regionTimeFactor = MinRegionGrowthMultiplier;
 
-            float zoneMultiplier = 1f / Math.Max(0.35f, zone.GrowthMultiplier);
+            float zoneMultiplier = 1f / Math.Max(MinZoneGrowthMultiplier, zone.GrowthMultiplier);
             if (IsNearWater(x, y, zones))
-                zoneMultiplier *= 0.9f;
+                zoneMultiplier *= WaterProximityGrowthTimeFactor;
 
-            int minutes = (int)Math.Round(baseMinutes * treeMultiplier * stageMultiplier * regionMultiplier * zoneMultiplier, MidpointRounding.AwayFromZero);
+            int minutes = (int)Math.Round(baseMinutes * treeMultiplier * stageMultiplier * regionTimeFactor * zoneMultiplier, MidpointRounding.AwayFromZero);
             return Math.Max(1, minutes);
         }
 
         private static float GetGrowthMultiplier(Region? region, TreeType treeType, ZoneDefinition zone, float x, float y, List<ZoneDefinition> zones)
         {
             float regionFactor = 1f + (region?.GrowthSpeedBonus ?? 0f);
-            float treeFactor = 1f / Math.Max(0.65f, treeType.GrowthTimeMultiplier);
-            float nearWater = IsNearWater(x, y, zones) ? 1.1f : 1f;
+            float treeFactor = 1f / Math.Max(MinTreeGrowthMultiplier, treeType.GrowthTimeMultiplier);
+            float nearWater = IsNearWater(x, y, zones) ? WaterProximityGrowthBonus : 1f;
             return regionFactor * zone.GrowthMultiplier * treeFactor * nearWater;
         }
 
@@ -747,7 +762,7 @@ namespace JasylEl.Services
                 multiplier += 0.1f;
             if (zone.ZoneType != "Water" && IsNearWater(x, y, zones))
                 multiplier -= 0.08f;
-            return Math.Clamp(multiplier, 0.65f, 1.8f);
+            return Math.Clamp(multiplier, MinWaterCostMultiplier, MaxWaterCostMultiplier);
         }
 
         private static bool IsNearWater(float x, float y, List<ZoneDefinition> zones)
@@ -755,10 +770,10 @@ namespace JasylEl.Services
             var waterZones = zones.Where(z => z.ZoneType == "Water");
             foreach (var zone in waterZones)
             {
-                float expandedX = zone.X - 140;
-                float expandedY = zone.Y - 140;
-                float expandedW = zone.Width + 280;
-                float expandedH = zone.Height + 280;
+                float expandedX = zone.X - WaterProximityExpansionPixels;
+                float expandedY = zone.Y - WaterProximityExpansionPixels;
+                float expandedW = zone.Width + WaterProximityExpansionPixels * 2;
+                float expandedH = zone.Height + WaterProximityExpansionPixels * 2;
                 if (x >= expandedX && x <= expandedX + expandedW && y >= expandedY && y <= expandedY + expandedH)
                     return true;
             }
